@@ -31,11 +31,12 @@ model Otp {
   user                  User        @relation(fields: [userId], references: [id])
 }
 
+// sesion model is created to manage multiple devise login/revoke
 model Session {
   id                    String      @default(uuid())      @id
   userId                String
   user                  User        @relation(fields: [userId], references: [id])
-  refreshTokenHash      String
+  refreshTokenHash      String      // mainly used to find session
   ip                    String
   userAgent             String
   revoked               Boolean     @default(false)

@@ -65,7 +65,6 @@ export async function register(req: Request, res: Response) {
 }
 
 
-
 // compare hashed pass, 
 export async function login(req: Request, res: Response) {
     const parsedResult = loginSchema.safeParse(req.body);
@@ -106,7 +105,7 @@ export async function login(req: Request, res: Response) {
         })
 
         // Store only the hash in DB — plain token never persisted
-        const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex");
+        const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex"); // converted plain refreshToken into hash
 
         const session = await prismaClient.session.create({ //creating session, help in Logout/revoke
             data: {
@@ -151,6 +150,7 @@ export async function login(req: Request, res: Response) {
     }
 }
 
+
 interface JwtPayload {
     id: string,
     sessionId: string
@@ -184,7 +184,8 @@ export async function getMe(req: Request, res: Response) {
     })
 }
 
-// this will create new accessToken
+
+// this will create new accessToken, and for safety -> rotation(updates tokens & hash)
 export async function refreshToken(req: Request, res: Response) {
     const refreshToken = req.cookies.refreshToken;
 
@@ -196,6 +197,24 @@ export async function refreshToken(req: Request, res: Response) {
 
     const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET!) as JwtPayload;
 
+    //update refreshTokenHash
+    const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex"); //plain refreshToken to hash using crypto
+
+    const session = await prismaClient.session.findFirst({
+        where: {
+            refreshTokenHash,
+            revoked: false,
+        }
+    })
+
+    if(!session) {
+        return res.status(401).json({
+            message: "Invalid refresh token",
+        })
+    }
+
+
+    // new accessToken
     const accessToken = await jwt.sign({
         id: decoded.id,
     }, process.env.JWT_SECRET!, {
@@ -207,6 +226,18 @@ export async function refreshToken(req: Request, res: Response) {
         id: decoded.id,
     }, process.env.JWT_SECRET!, {
         expiresIn: "7d"
+    })
+
+    // update new refreshTokenHash from DB
+    const newRefreshTokenHash = crypto.createHash("sha256").update(newRefreshToken).digest("hex");
+
+    await prismaClient.session.update({
+        where: {
+            id: session.id
+        },
+        data: {
+            refreshTokenHash: newRefreshTokenHash
+        }
     })
 
     //set refreshToken in cookies
@@ -224,8 +255,46 @@ export async function refreshToken(req: Request, res: Response) {
 
 }
 
-export async function logout() {
-    
+
+export async function logout(req: Request, res: Response) {
+    const refreshToken = req.cookies.refreshToken;
+
+    if(!refreshToken) {
+        res.status(400).json({
+            message: "Token not found"
+        })
+    }
+
+    // converted plain refreshToken into hash using crypto
+    const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex");
+
+    const session = await prismaClient.session.findFirst({
+        where: {
+            refreshTokenHash,
+            revoked: false
+        }
+    })
+
+    if(!session) {
+        return res.status(400).json({
+            message: "Invalid refresh token"
+        })
+    }
+
+    await prismaClient.session.update({
+        where: {
+            id: session.id
+        },
+        data: {
+            revoked: true
+        }
+    })
+
+    res.clearCookie("refreshToken");
+
+    res.status(200).json({
+        message: "Loged out successfully"
+    })
 }
 
 export async function logoutAll() {
