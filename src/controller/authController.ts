@@ -4,8 +4,10 @@ import prismaClient from "../db.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import crypto from "crypto"
+import { email } from "zod";
 
 
+// normal register func, validate schema, hash password and save in db
 export async function register(req: Request, res: Response) {
     const parsedResult = createUserSchema.safeParse(req.body);
 
@@ -62,6 +64,9 @@ export async function register(req: Request, res: Response) {
     }
 }
 
+
+
+// compare hashed pass, 
 export async function login(req: Request, res: Response) {
     const parsedResult = loginSchema.safeParse(req.body);
 
@@ -93,6 +98,7 @@ export async function login(req: Request, res: Response) {
             })
         }
 
+        // refreshToken only used to create accessToken(every 15 min)
         const refreshToken = await jwt.sign({
             id: user.id
         }, process.env.JWT_SECRET!, {
@@ -102,25 +108,25 @@ export async function login(req: Request, res: Response) {
         // Store only the hash in DB — plain token never persisted
         const refreshTokenHash = crypto.createHash("sha256").update(refreshToken).digest("hex");
 
-        const session = await prismaClient.session.create({
+        const session = await prismaClient.session.create({ //creating session, help in Logout/revoke
             data: {
                 userId: user.id,
                 refreshTokenHash,
                 ip: req.ip ?? "unknown", //can be unknow
-                userAgent: req.headers[ "user-agent" ] ?? "unknown" //can be unknow
+                userAgent: req.headers[ "user-agent" ] ?? "unknown",
             }
         })
 
         // Sign access token (short-lived, tied to sessionId for revocation)
         const accessToken = await jwt.sign({
-            id: user.id,
-            sessionId: session.id
+            id: user.id, // help us to get user details 
+            sessionId: session.id, // help us to check user is revoked or not
         }, process.env.JWT_SECRET!, {
             expiresIn: "15m"
         })
 
         // Refresh token sent via HttpOnly cookie — inaccessible to JS
-        res.cookie("refreshToken", refreshToken, {
+        res.cookie("refreshToken", refreshToken, { //plain refreshToken, 
             httpOnly: true,
             secure: true,
             sameSite: "strict",
@@ -128,7 +134,7 @@ export async function login(req: Request, res: Response) {
         })
 
 
-        res.status(200).json({
+        res.status(200).json({ //accessToken in body
             message: "Loged in successfully",
             user: {
                 username: user.username,
@@ -145,12 +151,77 @@ export async function login(req: Request, res: Response) {
     }
 }
 
-export async function getMe() {
-
+interface JwtPayload {
+    id: string,
+    sessionId: string
 }
 
-export async function refreshToken() {
-    
+export async function getMe(req: Request, res: Response) {
+    const token = req.headers.authorization?.split(" ")[1];
+    //console.log(token);
+    if(!token) {
+        return res.status(400).json({
+            message: "token not found"
+        })
+    }
+
+    const decode = jwt.verify(token, process.env.JWT_SECRET!) as JwtPayload;
+    //console.log(decode)
+
+    //we saved user.id in jwt token on login time
+    const user = await prismaClient.user.findFirst({
+        where: {
+            id: decode.id
+        }
+    })
+
+    res.status(200).json({
+        message: "User fetched successfully",
+        user: {
+            username: user?.username,
+            email: user?.email
+        }
+    })
+}
+
+// this will create new accessToken
+export async function refreshToken(req: Request, res: Response) {
+    const refreshToken = req.cookies.refreshToken;
+
+    if(!refreshToken) {
+        return res.json({
+            message: "token not found"
+        })
+    }
+
+    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET!) as JwtPayload;
+
+    const accessToken = await jwt.sign({
+        id: decoded.id,
+    }, process.env.JWT_SECRET!, {
+        expiresIn: "15m"
+    })
+
+    //for extra security we'll also create new refreshToken
+    const newRefreshToken = await jwt.sign({
+        id: decoded.id,
+    }, process.env.JWT_SECRET!, {
+        expiresIn: "7d"
+    })
+
+    //set refreshToken in cookies
+    res.cookie("refreshToken", newRefreshToken, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "strict",
+        maxAge: 7 * 24 * 60 * 60 * 1000
+    })
+
+    res.status(200).json({
+        message: "Access token refreshed successfully",
+        accessToken
+    })
+
 }
 
 export async function logout() {
